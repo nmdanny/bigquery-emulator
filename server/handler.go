@@ -675,7 +675,7 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -687,21 +687,21 @@ type datasetsInsertRequest struct {
 	dataset *bigqueryv2.Dataset
 }
 
-func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertRequest) (*bigqueryv2.DatasetListDatasets, error) {
+func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertRequest) (*bigqueryv2.DatasetListDatasets, *ServerError) {
 	if r.dataset.DatasetReference == nil {
-		return nil, fmt.Errorf("DatasetReference is nil")
+		return nil, errInternalError("DatasetReference is nil")
 	}
 	datasetID := r.dataset.DatasetReference.DatasetId
 	if datasetID == "" {
-		return nil, fmt.Errorf("dataset id is empty")
+		return nil, errInvalid("dataset id is empty")
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to get connection: %w", err).Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to start transaction: %w", err).Error())
 	}
 	defer tx.RollbackIfNotCommitted()
 
@@ -718,10 +718,13 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
-		return nil, err
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInternalError(err.Error())
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, errInternalError(fmt.Errorf("couldn't commit transaction: %w", err).Error())
 	}
 	return &bigqueryv2.DatasetListDatasets{
 		DatasetReference: &bigqueryv2.DatasetReference{
