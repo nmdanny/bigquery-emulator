@@ -254,7 +254,7 @@ func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	addr := server.httpServer.Addr
@@ -280,22 +280,25 @@ type uploadRequest struct {
 	job     *UploadJob
 }
 
-func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*metadata.Job, error) {
+func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*metadata.Job, *ServerError) {
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to get connection: %w", err).Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to start transaction: %w", err).Error())
 	}
 	defer tx.RollbackIfNotCommitted()
 	job := metadata.NewJob(r.server.metaRepo, r.project.ID, r.job.JobReference.JobId, r.job.ToJob(), nil, nil)
 	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
-		return nil, fmt.Errorf("failed to add job: %w", err)
+		if errors.Is(err, metadata.ErrDuplicatedJob) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInternalError(err.Error())
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit job: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to commit job: %w", err).Error())
 	}
 	return job, nil
 }
@@ -718,7 +721,7 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
-		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+		if errors.Is(err, metadata.ErrDuplicatedDataset) || strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return nil, errDuplicate(err.Error())
 		}
 		return nil, errInternalError(err.Error())
@@ -1013,7 +1016,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errJobInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1049,21 +1052,21 @@ func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *
 	)
 }
 
-func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, *ServerError) {
 	job := r.job
 	if job.Configuration == nil {
-		return nil, fmt.Errorf("unspecified job configuration")
+		return nil, errInvalidQuery("unspecified job configuration")
 	}
 	if job.Configuration.Query == nil {
-		return nil, fmt.Errorf("unspecified job configuration query")
+		return nil, errInvalidQuery("unspecified job configuration query")
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to get connection: %w", err).Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to start transaction: %w", err).Error())
 	}
 	defer tx.RollbackIfNotCommitted()
 	hasDestinationTable := job.Configuration.Query.DestinationTable != nil
@@ -1086,14 +1089,14 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			tableRef := job.Configuration.Query.DestinationTable
 			tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
 			if err != nil {
-				return nil, err
+				return nil, errInternalError(err.Error())
 			}
 			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
-				return nil, fmt.Errorf("failed to add table data: %w", err)
+				return nil, errInternalError(fmt.Errorf("failed to add table data: %w", err).Error())
 			}
 		} else if response.TotalRows > 0 {
 			if err := h.addQueryResultToDynamicDestinationTable(ctx, tx, r, response); err != nil {
-				return nil, fmt.Errorf("failed to add query result to dynamic destination table: %w", err)
+				return nil, errInternalError(fmt.Errorf("failed to add query result to dynamic destination table: %w", err).Error())
 			}
 		}
 	}
@@ -1141,11 +1144,14 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			jobErr,
 		),
 	); err != nil {
-		return nil, fmt.Errorf("failed to add job: %w", err)
+		if errors.Is(err, metadata.ErrDuplicatedJob) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInternalError(err.Error())
 	}
 	if !job.Configuration.DryRun {
 		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("failed to commit job: %w", err)
+			return nil, errInternalError(fmt.Errorf("failed to commit job: %w", err).Error())
 		}
 	}
 	return job, nil

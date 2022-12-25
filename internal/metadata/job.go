@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,8 @@ import (
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
+
+var ErrDuplicatedJob = errors.New("job is already created")
 
 type Job struct {
 	ID        string

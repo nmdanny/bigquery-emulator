@@ -111,7 +111,7 @@ func (p *Project) AddJob(ctx context.Context, tx *sql.Tx, job *Job) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, exists := p.jobMap[job.ID]; exists {
-		return fmt.Errorf("job %s is already created", job.ID)
+		return fmt.Errorf("job %s: %w", job.ID, ErrDuplicatedJob)
 	}
 	if err := job.Insert(ctx, tx); err != nil {
 		return err
